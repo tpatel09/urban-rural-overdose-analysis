@@ -1,0 +1,217 @@
+---
+title: "Urban vs. Rural Analysis of Overdose Rates"
+author: "Tejas Patel"
+date: "2024-12-13"
+output:
+  html_document:
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+#### Introduction
+
+Overdose fatalities have become more prevalent in some places of the United States than others due to the opioid epidemic's devastating effects. Rural locations also have difficulties in accessing healthcare and overdose prevention services, even though most conversations focus on metropolitan places because of their large population density and infrastructure. This research examines geographical differences, temporal trends, and overdose rates in urban and rural states.
+
+By dividing states into urban and rural regions according to population density, this approach explores the structural and geographic components of overdose outcomes. The study's findings might contribute to a better understanding of the dynamics of the crisis and help guide effective public health measures.
+
+<br>
+
+#### Data and Methods
+
+The resident population and population density for the states, regions, and country of the United States are included in this collection of data spanning many decades. To ensure that only state-level data was included, data cleaning involved eliminating rows for regions and nation-level summaries as well as rows with missing or blank values in the important columns. Commas were removed from the population and density columns to put the data in numeric format.
+
+The dataset was then enlarged to cover every year for every state over one-year intervals in a continuous series. In order to provide seamless transitions between data points, missing values in the population and density were then filled in with newly added data using linear interpolation.
+
+The dataset was then used to generate visualizations and a table to investigate the links between population density, overdose facilities, and fatalities per capita. 
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(tidyr)
+library(zoo)
+```
+
+
+```{r}
+#Load datasets
+cdc_data <- read.csv("cdc_data.csv")
+statedata <- read.csv("statedata.csv")
+region <- read.csv("states.csv")
+population_data <- read.csv("popdata.csv")
+
+#Clean CDC data
+cdc_clean <- cdc_data %>%
+  select(-Notes, -State.Code, -UCD...Drug.Alcohol.Induced.Code) %>%
+  filter(!is.na(Crude.Rate) & Crude.Rate != "Unreliable") %>%
+  mutate(Crude.Rate = as.numeric(Crude.Rate)) %>%
+  drop_na()
+
+#Clean state data for overdose prevention facilities
+state_clean <- statedata %>%
+  filter(INDICATOR == "SA_fac") %>%
+  select(STATE, YEAR, VALUE) 
+
+#Filter and interpolate missing population data
+population_clean <- population_data %>%
+  select(-c(5, 7, 8, 9, 10))
+population_clean <- population_clean %>%
+  #Convert to numeric and remove commas
+  mutate(
+    Resident.Population = as.numeric(gsub(",", "", Resident.Population)),
+    Resident.Population.Density = as.numeric(gsub(",", "", Resident.Population.Density))
+  ) %>%
+  #Exclude non-state rows
+  filter(Geography.Type == "State") %>%
+  #Expand data to include all years in sequence for each state
+  group_by(Name) %>%
+  complete(Year = full_seq(Year, 1)) %>%
+  #Interpolate data for the expanded years
+  mutate(
+    Resident.Population = zoo::na.approx(Resident.Population, na.rm = FALSE),
+    Resident.Population.Density = zoo::na.approx(Resident.Population.Density, na.rm = FALSE)
+  ) %>%
+  ungroup()
+  
+
+#Filter datasets to shared years
+cdc_clean <- cdc_clean %>% filter(Year >= 2004 & Year <= 2019)
+population_clean <- population_clean %>% filter(Year >= 2004 & Year <= 2019)
+
+#Merge datasets
+merged_data <- cdc_clean %>%
+  inner_join(state_clean, by = c("State" = "STATE", "Year" = "YEAR")) %>%
+  inner_join(region, by = c("State" = "State")) %>%
+  inner_join(population_clean, by = c("State" = "Name", "Year"))
+```
+
+<br>
+
+#### Classifying Urban and Rural States
+
+Using the interpolated population density data, states were classified as urban or rural. The following table summarizes some of the features of this categorization, including average population density, deaths per capita, total facilities, and total deaths.
+```{r}
+#Classify states as Urban or Rural based on population density
+merged_data <- merged_data %>%
+  mutate(Urban_Rural = ifelse(Resident.Population.Density > 100, "Urban", "Rural"))
+
+#Summarize Urban vs. Rural characteristics
+urban_rural_summary <- merged_data %>%
+  group_by(Urban_Rural) %>%
+  summarize(
+    Avg_Population_Density = mean(Resident.Population.Density, na.rm = TRUE),
+    Avg_Deaths_Per_Capita = mean(Deaths / Resident.Population, na.rm = TRUE),
+    Total_Facilities = sum(VALUE, na.rm = TRUE),
+    Total_Deaths = sum(Deaths, na.rm = TRUE)
+  )
+
+#Display summary table
+urban_rural_summary %>%
+  kable("html", caption = "Urban vs. Rural Characteristics Summary") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+Urban states have substantially larger population densities, more overdose prevention services, and higher mortality rates per capita than rural areas. These disparities may also represent systemic imbalances in resource allocation and population health outcomes.
+
+<br>
+
+#### Temporal Trends in Overdose Rates
+
+Overdose rates were analyzed over time for urban and rural states. The following line plot illustrates the average crude overdose rates per 100,000 for each classification from 2004 to 2019.
+```{r}
+#Aggregate data by Urban/Rural and Year
+urban_rural_trends <- merged_data %>%
+  mutate(Urban_Rural = ifelse(Resident.Population.Density > 100, "Urban", "Rural")) %>%
+  group_by(Urban_Rural, Year) %>%
+  summarize(
+    Avg_Crude_Rate = mean(Crude.Rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Line plot
+ggplot(urban_rural_trends, aes(x = Year, y = Avg_Crude_Rate, color = Urban_Rural, group = Urban_Rural)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Overdose Rates Over Time: Urban vs. Rural States",
+    x = "Year",
+    y = "Average Overdose Rate (Crude Rate per 100,000)",
+    color = "Urban/Rural Classification"
+  )
+```
+
+Urban states experienced a dramatic increase in crude death rates beginning in 2012, surpassing rural states by a significant margin. From 2007 to 2009, rural states temporarily exceeded urban states in crude death rates, reflecting their vulnerability during specific periods.
+
+<br>
+
+#### Regional Comparisons
+
+To study regional differences, per capita overdose deaths were compared among classes of urban/rural classifications for each U.S. Census region. The figure below depicts a bar chart for comparison of average deaths per capita between regions.
+```{r}
+#Regional breakdown of Urban vs. Rural rates
+regional_comparison <- merged_data %>%
+  group_by(Region, Urban_Rural) %>%
+  summarize(
+    Avg_Deaths_Per_Capita = mean(Deaths / Resident.Population, na.rm = TRUE),
+    Total_Facilities = sum(VALUE, na.rm = TRUE),
+    Total_Deaths = sum(Deaths, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Bar plot for regional differences
+ggplot(regional_comparison, aes(x = Region, y = Avg_Deaths_Per_Capita, fill = Urban_Rural)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(
+    title = "Regional Overdose Deaths Per Capita: Urban vs. Rural States",
+    x = "Region",
+    y = "Average Deaths Per Capita",
+    fill = "Urban/Rural Classification"
+  )
+```
+
+The urban states of the Midwest, Northeast, and South have higher average deaths per capita compared to their rural counterparts, but the Midwest presents the greatest disparity. The rural West states have slightly higher average deaths per capita than the urban West states, while the urban West states report higher total deaths across all years.
+
+<br>
+
+#### Overdose Facilities Access vs Deaths Per Capita by Urbanization Type
+
+The following scatterplot investigates the relationship between overdose prevention facilities per capita and overdose deaths per capita across urban and rural states. The goal is to visually assess whether access to facilities correlates with reduced deaths and to highlight disparities between urban and rural areas.
+```{r}
+#Scatter plot: Facilities per capita vs. Deaths per capita
+scatter_data <- merged_data %>%
+  mutate(Facilities_Per_Capita = VALUE / Resident.Population,
+         Deaths_Per_Capita = Deaths / Resident.Population)
+
+ggplot(scatter_data, aes(x = Facilities_Per_Capita, y = Deaths_Per_Capita, color = Urban_Rural)) +
+  geom_point(alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Relationship Between Facilities Per Capita and Deaths Per Capita",
+    x = "Facilities Per Capita",
+    y = "Deaths Per Capita",
+    color = "Urban/Rural Classification"
+  )
+```
+
+There is a slight positive correlation between facilities per capita and deaths per capita, which might indicate clustering of resources in high-need areas in urban states. In rural states, no such correlation exists, even though the facilities per capita are higher, which may be indicative of barriers to effective utilization.
+
+<br>
+
+#### Discussion / Conclusion
+
+This analysis shows significant disparities in the outcomes of overdose among urban/rural states and regions. Urban states consistently have higher population densities, overdose prevention services, and deaths per capita than rural states. Despite these resource advantages, metropolitan states had a rapid increase in crude death rates beginning in 2012, considerably exceeding rural regions. A brief period between 2007 and 2009, when crude death rates in rural states exceeded those in urban ones, highlights the unique issues that rural states face, such as limited healthcare access and societal barriers.
+
+Urban states in the Midwest, Northeast, and South have persistently greater average deaths per capita than rural states. The Midwest has the greatest urban-rural split, with urban Midwest states reporting nearly twice as many deaths per capita as rural Midwest states. In the West, rural states have somewhat higher average deaths per capita, but urban West states have a higher total mortality rate, illustrating the influence of population size in these trends.
+
+The association between overdose prevention facilities and deaths per capita highlights urban-rural disparities. There is a minor positive association between urban states, indicating that facilities are more likely to be located in high-need areas. Rural states show no correlation, despite having more services per capita. This disparity indicates that structural hurdles in rural areas, such as geographic isolation and restricted healthcare access, may impede the effectiveness of these resources. Additionally, the lack of correlation between facilities and deaths per capita in rural areas suggests the need to evaluate the effectiveness of resource distribution.
+
+These findings underline the importance of equitable, geographically customized interventions. Rural states demand more access to healthcare and overdose prevention facilities, whereas  Urban states may benefit from addressing systemic issues, including over-prescription and socioeconomic determinants of health. 
+Future research should explore the interplay of socioeconomic factors, healthcare infrastructure, and regional variations to inform more effective, equitable solutions. By addressing the unique challenges of urban and rural communities, policymakers can develop strategies to mitigate the devastating effects of the opioid epidemic and promote equitable health outcomes nationwide.
